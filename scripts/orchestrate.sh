@@ -140,7 +140,21 @@ ssh -o StrictHostKeyChecking=no -i "$KEY_FILE" ubuntu@$PUBLIC_IP << REMOTE_SCRIP
     # Download Automa (zipped folder with your workflows)
     curl -sL "${GITHUB_RAW}/extensions/1.29.12_0.zip" -o automa.zip
     unzip -o -q automa.zip -d .
-    mv 1.29.12_0 automa
+    
+    # Remove macOS junk
+    rm -rf __MACOSX
+    
+    # Move nested folder up (zip contains 1.29.12_0/ folder inside)
+    if [ -d "1.29.12_0" ]; then
+        mv 1.29.12_0 automa
+    fi
+    
+    # Fix permissions - Chrome needs to read these files
+    chmod -R 755 automa/
+    
+    # Verify manifest exists
+    echo "Checking Automa manifest..."
+    ls -la automa/manifest.json
     
     # Download and extract captcha solver
     curl -sL "${GITHUB_RAW}/extensions/captcha-solver.crx" -o captcha-solver.crx
@@ -151,6 +165,8 @@ data = open('captcha-solver.crx', 'rb').read()
 start = data.find(b'PK\x03\x04')
 zipfile.ZipFile(io.BytesIO(data[start:])).extractall('captcha-solver')
 "
+    # Fix permissions for captcha solver too
+    chmod -R 755 captcha-solver/
     
     echo "=== Starting browser with Automa ==="
     export DISPLAY=:99
@@ -215,11 +231,23 @@ driver = webdriver.Chrome(options=options)
 driver.implicitly_wait(10)
 
 try:
-    # Go to extensions page and find the actual ID
-    print("Opening chrome://extensions...")
-    driver.get("chrome://extensions")
+    # First, try opening with calculated ID directly
+    print(f"Trying calculated extension ID: {calculated_id}")
+    automa_url = f"chrome-extension://{calculated_id}/newtab.html"
+    driver.get(automa_url)
     time.sleep(3)
-    driver.save_screenshot("/tmp/screenshot_1_extensions.png")
+    driver.save_screenshot("/tmp/screenshot_1_calc_id.png")
+    print(f"Page title: {driver.title}")
+    
+    # If that worked, great!
+    if driver.title and "chrome-extension" not in driver.title.lower():
+        print("Calculated ID worked!")
+    else:
+        # Go to extensions page and find the actual ID
+        print("Calculated ID didn't work. Checking chrome://extensions...")
+        driver.get("chrome://extensions")
+        time.sleep(3)
+        driver.save_screenshot("/tmp/screenshot_1_extensions.png")
     
     # Enable developer mode and get extension details via JavaScript
     print("Enabling developer mode and getting extension IDs...")
@@ -320,16 +348,33 @@ PYTHON_SCRIPT
 
     python3 /tmp/run_automa.py
     
+    echo "=== Screenshots as base64 (copy to view) ==="
+    echo "--- screenshot_1_extensions.png ---"
+    base64 /tmp/screenshot_1_extensions.png 2>/dev/null | head -50
+    echo "..."
+    echo ""
+    
+    # List files in /tmp
+    echo "=== Files in /tmp ==="
+    ls -la /tmp/*.png 2>/dev/null || echo "No PNG files"
+    
     echo "=== Done ==="
     
 REMOTE_SCRIPT
 
 # Download screenshots to see what happened
 echo -e "${YELLOW}Downloading screenshots...${NC}"
-scp -o StrictHostKeyChecking=no -i "$KEY_FILE" ubuntu@$PUBLIC_IP:/tmp/screenshot.png ./screenshot.png 2>/dev/null && echo "✓ screenshot.png"
-scp -o StrictHostKeyChecking=no -i "$KEY_FILE" ubuntu@$PUBLIC_IP:/tmp/screenshot_1_extensions.png ./screenshot_1.png 2>/dev/null && echo "✓ screenshot_1.png"
-scp -o StrictHostKeyChecking=no -i "$KEY_FILE" ubuntu@$PUBLIC_IP:/tmp/screenshot_2_ext_check.png ./screenshot_2.png 2>/dev/null && echo "✓ screenshot_2.png"
-scp -o StrictHostKeyChecking=no -i "$KEY_FILE" ubuntu@$PUBLIC_IP:/tmp/screenshot_3_newtab.png ./screenshot_3.png 2>/dev/null && echo "✓ screenshot_3.png"
+echo "Instance IP: $PUBLIC_IP"
+
+# Try downloading each file with verbose output
+for file in screenshot.png screenshot_1_extensions.png screenshot_2_devmode.png screenshot_3_automa.png; do
+    echo "Downloading $file..."
+    scp -v -o StrictHostKeyChecking=no -o ConnectTimeout=10 -i "$KEY_FILE" "ubuntu@${PUBLIC_IP}:/tmp/${file}" "./${file}" 2>&1 | tail -3
+done
+
+# List what we got
+echo "Screenshots in current directory:"
+ls -la *.png 2>/dev/null || echo "No PNG files found"
 
 echo ""
 echo -e "${GREEN}========================================${NC}"
