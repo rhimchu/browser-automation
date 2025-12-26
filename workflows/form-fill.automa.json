@@ -1,0 +1,13 @@
+{
+  "name": "Form Fill Workflow",
+  "description": "Replace this file with your exported Automa workflow",
+  "instructions": [
+    "1. Open Automa extension in Chrome",
+    "2. Create your form-filling workflow",
+    "3. Click the menu (three dots) and select 'Export'",
+    "4. Save the exported JSON file, replacing this file"
+  ],
+  "drawflow": {
+    "nodes": []
+  }
+}
