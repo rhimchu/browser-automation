@@ -13,7 +13,7 @@ INSTANCE_TYPE="t2.micro"                    # Free tier eligible
 AMI_ID="ami-01811d4912b4ccb26"              # Ubuntu 22.04 in Singapore
 KEY_NAME="browser-automation-key"            # From aws-initial-setup.sh
 KEY_FILE="$HOME/.ssh/browser-automation-key.pem"
-SECURITY_GROUP=""                            # Fill this after running aws-initial-setup.sh
+SECURITY_GROUP="sg-009d7b361acc0059f"                            # Fill this after running aws-initial-setup.sh
 
 # Your GitHub repo URL (raw content URL)
 GITHUB_USER="rhimchu"                  # Change to your GitHub username
