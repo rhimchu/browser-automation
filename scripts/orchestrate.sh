@@ -120,16 +120,19 @@ ssh -o StrictHostKeyChecking=no -i "$KEY_FILE" ubuntu@$PUBLIC_IP << REMOTE_SCRIP
     echo "=== Installing dependencies ==="
     sudo apt-get update -qq
     
-    # Install Google Chrome (avoids Ubuntu snap issues)
-    wget -q -O /tmp/chrome.deb https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
-    sudo apt-get install -y /tmp/chrome.deb
-    
+    # Install Chromium (better extension support than Chrome for automation)
     sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+        chromium-browser \
+        chromium-chromedriver \
         xvfb \
         unzip \
         curl \
         imagemagick \
         python3-pip
+    
+    # Verify Chromium installed
+    echo "Chromium version:"
+    chromium-browser --version 2>/dev/null || chromium --version 2>/dev/null || echo "Chromium not found in expected path"
     
     pip3 install selenium --break-system-packages
     
@@ -143,13 +146,22 @@ ssh -o StrictHostKeyChecking=no -i "$KEY_FILE" ubuntu@$PUBLIC_IP << REMOTE_SCRIP
     # Extract CRX (it's a zip with a header)
     mkdir -p automa
     python3 -c "
-import zipfile, io
+import zipfile, io, json
 data = open('automa.crx', 'rb').read()
 start = data.find(b'PK\x03\x04')
 if start == -1:
     print('ERROR: Not a valid CRX file')
 else:
     zipfile.ZipFile(io.BytesIO(data[start:])).extractall('automa')
+    # Remove update_url from manifest (causes issues with unpacked extensions)
+    manifest_path = 'automa/manifest.json'
+    with open(manifest_path, 'r') as f:
+        manifest = json.load(f)
+    if 'update_url' in manifest:
+        del manifest['update_url']
+        with open(manifest_path, 'w') as f:
+            json.dump(manifest, f, indent=2)
+        print('Removed update_url from manifest')
     print('Automa extracted successfully')
 "
     
@@ -204,12 +216,17 @@ from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
 
-# Known Automa extension ID from Chrome Web Store
-AUTOMA_ID = "infppggnoaenmfagbfknfkancpbljcca"
-
-print("Setting up Chrome with extensions...")
+print("Setting up Chromium with extensions...")
 options = Options()
-options.binary_location = "/usr/bin/google-chrome"
+
+# Try different Chromium binary locations
+for binary in ["/usr/bin/chromium-browser", "/usr/bin/chromium", "/snap/bin/chromium"]:
+    if os.path.exists(binary):
+        options.binary_location = binary
+        print(f"Using binary: {binary}")
+        break
+else:
+    print("WARNING: No Chromium binary found, trying default")
 
 # Load extensions
 options.add_argument("--load-extension=/tmp/extensions/automa,/tmp/extensions/captcha-solver")
@@ -219,58 +236,104 @@ options.add_argument("--disable-gpu")
 options.add_argument("--window-size=1920,1080")
 options.add_argument("--no-first-run")
 options.add_argument("--no-default-browser-check")
+options.add_argument("--disable-extensions-except=/tmp/extensions/automa,/tmp/extensions/captcha-solver")
+options.add_argument("--enable-logging")
+options.add_argument("--v=1")
 
 driver = webdriver.Chrome(options=options)
 driver.implicitly_wait(10)
 
 try:
-    # Open Automa dashboard using known extension ID
-    automa_url = f"chrome-extension://{AUTOMA_ID}/newtab.html"
-    print(f"Opening Automa: {automa_url}")
-    driver.get(automa_url)
-    time.sleep(5)
+    # First go to chrome://extensions to find what's loaded
+    print("Checking chrome://extensions...")
+    driver.get("chrome://extensions")
+    time.sleep(3)
+    driver.save_screenshot("/tmp/screenshot_1_extensions.png")
     
-    print(f"Page title: {driver.title}")
-    print(f"Page URL: {driver.current_url}")
-    driver.save_screenshot("/tmp/screenshot_1_automa.png")
-    
-    # Check if Automa loaded successfully
-    if driver.title and driver.title != automa_url and "chrome-extension" not in driver.title:
-        print("SUCCESS! Automa loaded!")
+    # Enable developer mode and get extension info
+    script = """
+    try {
+        const manager = document.querySelector('extensions-manager');
+        if (!manager || !manager.shadowRoot) return JSON.stringify({error: 'no manager'});
         
-        # Look for UI elements
+        // Enable developer mode
+        const toolbar = manager.shadowRoot.querySelector('extensions-toolbar');
+        if (toolbar && toolbar.shadowRoot) {
+            const toggle = toolbar.shadowRoot.querySelector('#devMode');
+            if (toggle && !toggle.checked) {
+                toggle.click();
+                await new Promise(r => setTimeout(r, 500));
+            }
+        }
+        
+        const itemList = manager.shadowRoot.querySelector('extensions-item-list');
+        if (!itemList || !itemList.shadowRoot) return JSON.stringify({error: 'no item list'});
+        
+        const items = itemList.shadowRoot.querySelectorAll('extensions-item');
+        const results = [];
+        items.forEach(item => {
+            try {
+                const name = item.shadowRoot.querySelector('#name');
+                results.push({
+                    id: item.id,
+                    name: name ? name.textContent.trim() : 'unknown'
+                });
+            } catch(e) {}
+        });
+        return JSON.stringify({extensions: results, count: items.length});
+    } catch(e) {
+        return JSON.stringify({error: e.toString()});
+    }
+    """
+    
+    result = driver.execute_script(script)
+    print(f"Extension check result: {result}")
+    
+    # Parse result
+    try:
+        data = json.loads(result) if isinstance(result, str) else result
+    except:
+        data = {"error": "parse failed", "raw": str(result)}
+    
+    print(f"Parsed data: {data}")
+    driver.save_screenshot("/tmp/screenshot_2_devmode.png")
+    
+    # Find Automa extension ID
+    automa_id = None
+    if 'extensions' in data:
+        for ext in data['extensions']:
+            print(f"  Found extension: {ext}")
+            if 'automa' in ext.get('name', '').lower():
+                automa_id = ext['id']
+                print(f"  -> Automa ID: {automa_id}")
+    
+    if automa_id:
+        # Open Automa dashboard
+        automa_url = f"chrome-extension://{automa_id}/newtab.html"
+        print(f"Opening Automa: {automa_url}")
+        driver.get(automa_url)
+        time.sleep(5)
+        
+        print(f"Page title: {driver.title}")
+        print(f"Page URL: {driver.current_url}")
+        driver.save_screenshot("/tmp/screenshot_3_automa.png")
+        
+        # Check for UI elements
         buttons = driver.find_elements(By.TAG_NAME, "button")
-        print(f"Found {len(buttons)} buttons:")
-        for i, b in enumerate(buttons[:20]):
+        print(f"Found {len(buttons)} buttons")
+        for i, b in enumerate(buttons[:15]):
             txt = b.text or b.get_attribute('aria-label') or b.get_attribute('title') or ''
             if txt:
                 print(f"  {i}: {txt[:50]}")
-        
-        # Look for workflow elements
-        inputs = driver.find_elements(By.TAG_NAME, "input")
-        print(f"Found {len(inputs)} input elements")
-        
-        # Look for import functionality
-        import_elements = driver.find_elements(By.XPATH, "//*[contains(text(), 'Import') or contains(text(), 'import')]")
-        print(f"Found {len(import_elements)} import-related elements")
-        
     else:
-        print("Automa did not load. Checking chrome://extensions...")
-        driver.get("chrome://extensions")
-        time.sleep(3)
-        driver.save_screenshot("/tmp/screenshot_2_extensions.png")
+        print("ERROR: No extensions loaded!")
+        print("This usually means Chrome rejected the extension.")
+        print("Checking Chrome logs...")
         
-        # Check how many extensions loaded
-        script = """
-        try {
-            const manager = document.querySelector('extensions-manager');
-            const itemList = manager.shadowRoot.querySelector('extensions-item-list');
-            const items = itemList.shadowRoot.querySelectorAll('extensions-item');
-            return items.length;
-        } catch(e) { return -1; }
-        """
-        count = driver.execute_script(script)
-        print(f"Extensions loaded: {count}")
+        # Try to get any error info
+        logs = driver.get_log('browser')
+        for log in logs[-20:]:
+            print(f"  {log}")
     
     driver.save_screenshot("/tmp/screenshot.png")
     
