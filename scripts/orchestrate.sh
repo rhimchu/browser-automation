@@ -164,13 +164,17 @@ zipfile.ZipFile(io.BytesIO(data[start:])).extractall('captcha-solver')
     rm -rf /tmp/extensions/automa/_metadata
     rm -rf /tmp/extensions/captcha-solver/_metadata
     
-    # Create and run Python script to import workflow and execute
+    # Check manifest
+    echo "=== Automa manifest.json ==="
+    cat /tmp/extensions/automa/manifest.json | head -30
+    
+    # Create and run Python script
     cat > /tmp/run_automa.py << 'PYTHON_SCRIPT'
 import os
 import sys
 import time
 import json
-import subprocess
+import hashlib
 
 os.environ["DISPLAY"] = ":99"
 
@@ -178,96 +182,123 @@ from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
 
+# Calculate extension ID from path (Chrome uses this for unpacked extensions)
+def get_extension_id(path):
+    # Chrome generates extension ID from the path using SHA256
+    path = os.path.abspath(path)
+    # This is a simplified version - Chrome's actual algorithm is more complex
+    m = hashlib.sha256()
+    m.update(path.encode('utf-8'))
+    hash_bytes = m.digest()[:16]
+    # Convert to extension ID format (a-p alphabet)
+    ext_id = ''.join(chr(ord('a') + (b >> 4)) + chr(ord('a') + (b & 0xf)) for b in hash_bytes)
+    return ext_id
+
+automa_path = "/tmp/extensions/automa"
+calculated_id = get_extension_id(automa_path)
+print(f"Calculated Automa extension ID: {calculated_id}")
+
 print("Setting up Chrome...")
 options = Options()
 options.binary_location = "/usr/bin/google-chrome"
 
-# Use both flags for better extension loading
-options.add_argument("--load-extension=/tmp/extensions/automa,/tmp/extensions/captcha-solver")
-options.add_argument("--disable-extensions-except=/tmp/extensions/automa,/tmp/extensions/captcha-solver")
-options.add_argument("--enable-extension=/tmp/extensions/automa")
-
+# Load extension
+options.add_argument(f"--load-extension={automa_path},/tmp/extensions/captcha-solver")
 options.add_argument("--no-sandbox")
 options.add_argument("--disable-dev-shm-usage")
 options.add_argument("--disable-gpu")
 options.add_argument("--window-size=1920,1080")
-options.add_argument("--disable-blink-features=AutomationControlled")
 options.add_argument("--no-first-run")
 options.add_argument("--no-default-browser-check")
-options.add_argument("--disable-popup-blocking")
-options.add_argument("--allow-running-insecure-content")
-
-# Don't use headless - extensions don't work in headless
-# options.add_argument("--headless=new")
 
 driver = webdriver.Chrome(options=options)
 driver.implicitly_wait(10)
 
 try:
-    # First, check extensions page
-    print("Checking chrome://extensions...")
+    # Go to extensions page and find the actual ID
+    print("Opening chrome://extensions...")
     driver.get("chrome://extensions")
     time.sleep(3)
     driver.save_screenshot("/tmp/screenshot_1_extensions.png")
     
-    # Get page source to debug
-    print("Extensions page loaded")
+    # Enable developer mode and get extension details via JavaScript
+    print("Enabling developer mode and getting extension IDs...")
     
-    # Now try to open a regular page first to let extensions initialize
-    print("Opening blank page to let extensions load...")
-    driver.get("about:blank")
-    time.sleep(3)
+    # Try to get extension IDs from the page
+    script = """
+    const manager = document.querySelector('extensions-manager');
+    if (!manager || !manager.shadowRoot) return 'no manager';
     
-    # Check what extensions are available by looking at chrome.management API
-    # Try opening Automa popup instead of newtab
-    print("Trying Automa popup...")
+    // Click developer mode toggle if exists
+    try {
+        const toolbar = manager.shadowRoot.querySelector('extensions-toolbar');
+        if (toolbar && toolbar.shadowRoot) {
+            const toggle = toolbar.shadowRoot.querySelector('#devMode');
+            if (toggle && !toggle.checked) toggle.click();
+        }
+    } catch(e) {}
     
-    # Get all window handles
-    original_window = driver.current_window_handle
+    // Get extensions
+    const itemList = manager.shadowRoot.querySelector('extensions-item-list');
+    if (!itemList || !itemList.shadowRoot) return 'no item list';
     
-    # Try to find extension by checking chrome://extensions page content
-    driver.get("chrome://extensions")
+    const items = itemList.shadowRoot.querySelectorAll('extensions-item');
+    const results = [];
+    items.forEach(item => {
+        try {
+            const name = item.shadowRoot.querySelector('#name');
+            const id = item.id;
+            results.push({id: id, name: name ? name.textContent : 'unknown'});
+        } catch(e) {}
+    });
+    return JSON.stringify(results);
+    """
+    
+    result = driver.execute_script(script)
+    print(f"Extensions found: {result}")
+    
     time.sleep(2)
+    driver.save_screenshot("/tmp/screenshot_2_devmode.png")
     
-    # Take screenshot of extensions
-    driver.save_screenshot("/tmp/screenshot_2_ext_check.png")
+    # Parse the result to find Automa
+    automa_id = None
+    try:
+        extensions = json.loads(result) if isinstance(result, str) and result.startswith('[') else []
+        for ext in extensions:
+            print(f"  Extension: {ext}")
+            if 'automa' in ext.get('name', '').lower():
+                automa_id = ext['id']
+                print(f"  -> Found Automa ID: {automa_id}")
+    except:
+        print(f"Could not parse extensions: {result}")
     
-    # Get page HTML to see what extensions are loaded
-    page_source = driver.page_source
-    print(f"Page source length: {len(page_source)}")
-    
-    # Now try different extension URLs
-    # The extension ID for unpacked extensions is generated from the path
-    # Let's try to find it
-    
-    print("Listing chrome-extension:// URLs that might work...")
-    
-    # Try the popup
-    test_urls = [
-        "chrome://newtab",
-    ]
-    
-    for url in test_urls:
-        print(f"Trying: {url}")
-        try:
-            driver.get(url)
-            time.sleep(2)
-            title = driver.title
-            print(f"  Title: {title}")
-            if "automa" in title.lower() or "workflow" in title.lower():
-                print("  Found Automa!")
-                break
-        except Exception as e:
-            print(f"  Error: {e}")
-    
-    driver.save_screenshot("/tmp/screenshot_3_newtab.png")
-    print(f"Final page: {driver.title} - {driver.current_url}")
-    
-    # List all buttons on page
-    buttons = driver.find_elements(By.TAG_NAME, "button")
-    print(f"Found {len(buttons)} buttons")
-    for i, b in enumerate(buttons[:10]):
-        print(f"  {i}: {b.text or b.get_attribute('aria-label') or '(no text)'}")
+    # If we found Automa, open its newtab page
+    if automa_id:
+        automa_url = f"chrome-extension://{automa_id}/newtab.html"
+        print(f"Opening Automa at: {automa_url}")
+        driver.get(automa_url)
+        time.sleep(5)
+        driver.save_screenshot("/tmp/screenshot_3_automa.png")
+        print(f"Page title: {driver.title}")
+        print(f"Page URL: {driver.current_url}")
+        
+        # List what we see
+        buttons = driver.find_elements(By.TAG_NAME, "button")
+        print(f"Found {len(buttons)} buttons")
+        for i, b in enumerate(buttons[:20]):
+            txt = b.text or b.get_attribute('aria-label') or b.get_attribute('title') or ''
+            print(f"  {i}: {txt[:50]}")
+        
+        # Look for workflow elements
+        workflow_elements = driver.find_elements(By.XPATH, "//*[contains(@class, 'workflow') or contains(text(), 'workflow') or contains(text(), 'Workflow')]")
+        print(f"Found {len(workflow_elements)} workflow-related elements")
+        
+    else:
+        print("ERROR: Could not find Automa extension!")
+        # Take screenshot anyway
+        driver.get("chrome://extensions")
+        time.sleep(2)
+        driver.save_screenshot("/tmp/screenshot_3_automa.png")
     
     driver.save_screenshot("/tmp/screenshot.png")
     
