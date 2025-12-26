@@ -128,7 +128,10 @@ ssh -o StrictHostKeyChecking=no -i "$KEY_FILE" ubuntu@$PUBLIC_IP << REMOTE_SCRIP
         xvfb \
         unzip \
         curl \
-        imagemagick
+        imagemagick \
+        python3-pip
+    
+    pip3 install selenium --break-system-packages
     
     echo "=== Downloading extensions from GitHub ==="
     mkdir -p /tmp/extensions
@@ -154,35 +157,155 @@ zipfile.ZipFile(io.BytesIO(data[start:])).extractall('captcha-solver')
     Xvfb :99 -screen 0 1920x1080x24 &
     sleep 2
     
-    # Launch Chrome with extensions
-    # Automa will auto-run on startup since workflow is set to "On Browser Startup"
-    google-chrome \
-        --no-sandbox \
-        --disable-gpu \
-        --disable-dev-shm-usage \
-        --window-size=1920,1080 \
-        --load-extension=/tmp/extensions/automa,/tmp/extensions/captcha-solver \
-        --disable-blink-features=AutomationControlled \
-        --no-first-run \
-        --no-default-browser-check \
-        --user-data-dir=/tmp/chrome-profile &
+    # Download workflow JSON
+    curl -sL "${GITHUB_RAW}/workflows/form-fill.automa.json" -o /tmp/workflow.json
     
-    BROWSER_PID=\$!
-    echo "Browser started (PID: \$BROWSER_PID)"
-    echo "Automa workflow running..."
+    # Create and run Python script to import workflow and execute
+    cat > /tmp/run_automa.py << 'PYTHON_SCRIPT'
+import os
+import sys
+import time
+import json
+
+os.environ["DISPLAY"] = ":99"
+
+from selenium import webdriver
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.chrome.service import Service
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+
+print("Setting up Chrome...")
+options = Options()
+options.binary_location = "/usr/bin/google-chrome"
+options.add_argument("--load-extension=/tmp/extensions/automa,/tmp/extensions/captcha-solver")
+options.add_argument("--no-sandbox")
+options.add_argument("--disable-dev-shm-usage")
+options.add_argument("--disable-gpu")
+options.add_argument("--window-size=1920,1080")
+options.add_argument("--disable-blink-features=AutomationControlled")
+options.add_argument("--no-first-run")
+options.add_argument("--no-default-browser-check")
+
+driver = webdriver.Chrome(options=options)
+driver.implicitly_wait(10)
+
+try:
+    # Load workflow JSON
+    with open("/tmp/workflow.json", "r") as f:
+        workflow = json.load(f)
     
-    # Wait for workflow (adjust time as needed)
-    sleep 90
+    print("Opening Automa dashboard...")
+    # Automa extension ID (standard)
+    driver.get("chrome-extension://infppggnoaenmfagbfknfkancpbljcca/newtab.html")
+    time.sleep(3)
     
-    echo "=== Taking screenshot ==="
-    DISPLAY=:99 import -window root /tmp/screenshot.png 2>/dev/null || echo "Screenshot skipped"
+    print("Importing workflow via JavaScript...")
+    # Import workflow directly into Automa's storage
+    import_script = """
+    return new Promise((resolve, reject) => {
+        const workflow = arguments[0];
+        
+        // Access Automa's background page to import
+        chrome.runtime.sendMessage(
+            'infppggnoaenmfagbfknfkancpbljcca',
+            { 
+                type: 'workflow:import', 
+                data: workflow 
+            },
+            response => {
+                if (chrome.runtime.lastError) {
+                    reject(chrome.runtime.lastError);
+                } else {
+                    resolve(response);
+                }
+            }
+        );
+    });
+    """
     
-    # Kill browser
-    kill \$BROWSER_PID 2>/dev/null || true
+    # Alternative: Use localStorage/IndexedDB approach
+    # First try to execute workflow directly
+    execute_script = """
+    const workflow = arguments[0];
+    
+    // Store in localStorage for Automa to pick up
+    localStorage.setItem('automa-workflow-import', JSON.stringify(workflow));
+    
+    // Trigger import event
+    window.dispatchEvent(new CustomEvent('automa:import-workflow', { detail: workflow }));
+    
+    return 'stored';
+    """
+    
+    result = driver.execute_script(execute_script, workflow)
+    print(f"Import result: {result}")
+    
+    time.sleep(2)
+    
+    # Refresh to see imported workflow
+    driver.refresh()
+    time.sleep(3)
+    
+    print("Looking for workflow to execute...")
+    
+    # Try to find and click the workflow
+    try:
+        # Look for workflow card or run button
+        workflow_elements = driver.find_elements(By.CSS_SELECTOR, "[class*='workflow'], [class*='card']")
+        print(f"Found {len(workflow_elements)} potential workflow elements")
+        
+        # Try clicking first workflow
+        if workflow_elements:
+            workflow_elements[0].click()
+            time.sleep(2)
+    except Exception as e:
+        print(f"Could not click workflow: {e}")
+    
+    # Try to find and click play/run button
+    try:
+        run_buttons = driver.find_elements(By.CSS_SELECTOR, "button[title*='run'], button[title*='Run'], button[title*='play'], [class*='play'], [class*='run']")
+        print(f"Found {len(run_buttons)} run buttons")
+        for btn in run_buttons:
+            try:
+                btn.click()
+                print("Clicked run button")
+                break
+            except:
+                pass
+    except Exception as e:
+        print(f"Could not find run button: {e}")
+    
+    print("Waiting for workflow to complete...")
+    time.sleep(60)
+    
+    # Take screenshot
+    driver.save_screenshot("/tmp/screenshot.png")
+    print("Screenshot saved to /tmp/screenshot.png")
+    
+except Exception as e:
+    print(f"Error: {e}")
+    import traceback
+    traceback.print_exc()
+    driver.save_screenshot("/tmp/screenshot.png")
+    
+finally:
+    print("Closing browser...")
+    driver.quit()
+
+print("Done!")
+PYTHON_SCRIPT
+
+    python3 /tmp/run_automa.py
     
     echo "=== Done ==="
     
 REMOTE_SCRIPT
+
+# Download screenshot to see what happened
+echo -e "${YELLOW}Downloading screenshot...${NC}"
+scp -o StrictHostKeyChecking=no -i "$KEY_FILE" ubuntu@$PUBLIC_IP:/tmp/screenshot.png ./screenshot-$(date +%Y%m%d-%H%M%S).png 2>/dev/null && echo -e "${GREEN}✓ Screenshot saved${NC}" || echo "No screenshot available"
 
 echo ""
 echo -e "${GREEN}========================================${NC}"
