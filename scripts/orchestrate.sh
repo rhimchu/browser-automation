@@ -166,6 +166,7 @@ import os
 import sys
 import time
 import json
+import glob
 
 os.environ["DISPLAY"] = ":99"
 
@@ -193,66 +194,102 @@ driver = webdriver.Chrome(options=options)
 driver.implicitly_wait(10)
 
 try:
-    print("Opening Automa dashboard...")
-    driver.get("chrome-extension://infppggnoaenmfagbfknfkancpbljcca/newtab.html")
-    time.sleep(5)
+    # First, go to chrome://extensions to find Automa's actual ID
+    print("Finding Automa extension ID...")
+    driver.get("chrome://extensions")
+    time.sleep(3)
     
-    # Take screenshot to see initial state
-    driver.save_screenshot("/tmp/screenshot_1_initial.png")
-    print("Screenshot 1: Initial Automa page")
+    driver.save_screenshot("/tmp/screenshot_1_extensions.png")
+    print("Screenshot 1: Extensions page")
     
-    # Print page source for debugging
-    print(f"Page title: {driver.title}")
+    # Enable developer mode to see extension IDs
+    try:
+        dev_toggle = driver.execute_script("""
+            return document.querySelector('extensions-manager').shadowRoot
+                .querySelector('extensions-toolbar').shadowRoot
+                .querySelector('#devMode');
+        """)
+        if dev_toggle and not dev_toggle.get_attribute('checked'):
+            driver.execute_script("""
+                document.querySelector('extensions-manager').shadowRoot
+                    .querySelector('extensions-toolbar').shadowRoot
+                    .querySelector('#devMode').click();
+            """)
+            time.sleep(1)
+    except Exception as e:
+        print(f"Could not toggle dev mode: {e}")
+    
+    driver.save_screenshot("/tmp/screenshot_2_devmode.png")
+    
+    # Get all extension IDs
+    ext_ids = driver.execute_script("""
+        const manager = document.querySelector('extensions-manager');
+        if (!manager) return [];
+        const itemsList = manager.shadowRoot.querySelector('extensions-item-list');
+        if (!itemsList) return [];
+        const items = itemsList.shadowRoot.querySelectorAll('extensions-item');
+        return Array.from(items).map(item => ({
+            id: item.id,
+            name: item.shadowRoot.querySelector('#name')?.textContent || 'unknown'
+        }));
+    """)
+    
+    print(f"Found extensions: {ext_ids}")
+    
+    # Find Automa extension ID
+    automa_id = None
+    for ext in ext_ids:
+        if 'automa' in ext.get('name', '').lower():
+            automa_id = ext['id']
+            print(f"Found Automa with ID: {automa_id}")
+            break
+    
+    if not automa_id:
+        # Try reading from manifest
+        print("Trying to read Automa ID from manifest...")
+        # Check the extension folder for manifest
+        import hashlib
+        manifest_path = "/tmp/extensions/automa/manifest.json"
+        if os.path.exists(manifest_path):
+            with open(manifest_path) as f:
+                manifest = json.load(f)
+                print(f"Automa manifest name: {manifest.get('name')}")
+    
+    # If we found Automa ID, open its dashboard
+    if automa_id:
+        automa_url = f"chrome-extension://{automa_id}/newtab.html"
+        print(f"Opening Automa at: {automa_url}")
+        driver.get(automa_url)
+        time.sleep(5)
+    else:
+        print("Could not find Automa ID, trying default URLs...")
+        # Try different possible pages
+        for url in [
+            "chrome://newtab",
+            "chrome-extension://infppggnoaenmfagbfknfkancpbljcca/newtab.html"
+        ]:
+            driver.get(url)
+            time.sleep(2)
+    
+    driver.save_screenshot("/tmp/screenshot_3_automa.png")
+    print(f"Screenshot 3: Page title = {driver.title}")
     print(f"Current URL: {driver.current_url}")
     
-    # Try to find the import/menu button
-    print("Looking for menu or import options...")
-    
-    # Look for common UI elements
+    # Print page info
     all_buttons = driver.find_elements(By.TAG_NAME, "button")
     print(f"Found {len(all_buttons)} buttons")
-    for i, btn in enumerate(all_buttons[:10]):
+    for i, btn in enumerate(all_buttons[:15]):
         try:
-            print(f"  Button {i}: {btn.text[:50] if btn.text else '(no text)'} - {btn.get_attribute('class')[:50] if btn.get_attribute('class') else ''}")
+            txt = btn.text[:30] if btn.text else btn.get_attribute('aria-label') or '(no text)'
+            print(f"  Button {i}: {txt}")
         except:
             pass
     
-    # Look for import-related elements
-    import_elements = driver.find_elements(By.XPATH, "//*[contains(text(), 'Import') or contains(text(), 'import')]")
-    print(f"Found {len(import_elements)} import-related elements")
-    
-    # Look for dropdown/menu triggers
-    menu_elements = driver.find_elements(By.CSS_SELECTOR, "[class*='menu'], [class*='dropdown'], [aria-haspopup='true']")
-    print(f"Found {len(menu_elements)} menu elements")
-    
-    # Try clicking on settings/menu icon (usually three dots or hamburger)
-    icon_buttons = driver.find_elements(By.CSS_SELECTOR, "button svg, button i, [class*='icon']")
-    print(f"Found {len(icon_buttons)} icon buttons")
-    
-    time.sleep(2)
-    driver.save_screenshot("/tmp/screenshot_2_exploring.png")
-    print("Screenshot 2: After exploring UI")
-    
-    # Look for any workflow cards that might already exist
-    cards = driver.find_elements(By.CSS_SELECTOR, "[class*='card'], [class*='workflow'], [class*='item']")
-    print(f"Found {len(cards)} card/item elements")
-    
-    # Try to find "New workflow" or similar
-    new_workflow = driver.find_elements(By.XPATH, "//*[contains(text(), 'New') or contains(text(), 'Create') or contains(text(), '+')]")
-    print(f"Found {len(new_workflow)} 'New/Create' elements")
-    
-    # Check if there's a file input for import
+    # Look for file input
     file_inputs = driver.find_elements(By.CSS_SELECTOR, "input[type='file']")
     print(f"Found {len(file_inputs)} file inputs")
     
-    if file_inputs:
-        print("Found file input! Attempting to upload workflow...")
-        file_inputs[0].send_keys("/tmp/workflow.json")
-        time.sleep(3)
-        driver.save_screenshot("/tmp/screenshot_3_after_upload.png")
-    
     # Final screenshot
-    time.sleep(2)
     driver.save_screenshot("/tmp/screenshot.png")
     print("Final screenshot saved")
     
