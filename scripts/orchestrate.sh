@@ -160,28 +160,33 @@ zipfile.ZipFile(io.BytesIO(data[start:])).extractall('captcha-solver')
     # Download workflow JSON
     curl -sL "${GITHUB_RAW}/workflows/form-fill.automa.json" -o /tmp/workflow.json
     
+    # Remove _metadata folder which can cause issues
+    rm -rf /tmp/extensions/automa/_metadata
+    rm -rf /tmp/extensions/captcha-solver/_metadata
+    
     # Create and run Python script to import workflow and execute
     cat > /tmp/run_automa.py << 'PYTHON_SCRIPT'
 import os
 import sys
 import time
 import json
-import glob
+import subprocess
 
 os.environ["DISPLAY"] = ":99"
 
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
-from selenium.webdriver.common.keys import Keys
-from selenium.webdriver.common.action_chains import ActionChains
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
 
 print("Setting up Chrome...")
 options = Options()
 options.binary_location = "/usr/bin/google-chrome"
+
+# Use both flags for better extension loading
 options.add_argument("--load-extension=/tmp/extensions/automa,/tmp/extensions/captcha-solver")
+options.add_argument("--disable-extensions-except=/tmp/extensions/automa,/tmp/extensions/captcha-solver")
+options.add_argument("--enable-extension=/tmp/extensions/automa")
+
 options.add_argument("--no-sandbox")
 options.add_argument("--disable-dev-shm-usage")
 options.add_argument("--disable-gpu")
@@ -189,115 +194,91 @@ options.add_argument("--window-size=1920,1080")
 options.add_argument("--disable-blink-features=AutomationControlled")
 options.add_argument("--no-first-run")
 options.add_argument("--no-default-browser-check")
+options.add_argument("--disable-popup-blocking")
+options.add_argument("--allow-running-insecure-content")
+
+# Don't use headless - extensions don't work in headless
+# options.add_argument("--headless=new")
 
 driver = webdriver.Chrome(options=options)
 driver.implicitly_wait(10)
 
 try:
-    # First, go to chrome://extensions to find Automa's actual ID
-    print("Finding Automa extension ID...")
+    # First, check extensions page
+    print("Checking chrome://extensions...")
     driver.get("chrome://extensions")
     time.sleep(3)
-    
     driver.save_screenshot("/tmp/screenshot_1_extensions.png")
-    print("Screenshot 1: Extensions page")
     
-    # Enable developer mode to see extension IDs
-    try:
-        dev_toggle = driver.execute_script("""
-            return document.querySelector('extensions-manager').shadowRoot
-                .querySelector('extensions-toolbar').shadowRoot
-                .querySelector('#devMode');
-        """)
-        if dev_toggle and not dev_toggle.get_attribute('checked'):
-            driver.execute_script("""
-                document.querySelector('extensions-manager').shadowRoot
-                    .querySelector('extensions-toolbar').shadowRoot
-                    .querySelector('#devMode').click();
-            """)
-            time.sleep(1)
-    except Exception as e:
-        print(f"Could not toggle dev mode: {e}")
+    # Get page source to debug
+    print("Extensions page loaded")
     
-    driver.save_screenshot("/tmp/screenshot_2_devmode.png")
+    # Now try to open a regular page first to let extensions initialize
+    print("Opening blank page to let extensions load...")
+    driver.get("about:blank")
+    time.sleep(3)
     
-    # Get all extension IDs
-    ext_ids = driver.execute_script("""
-        const manager = document.querySelector('extensions-manager');
-        if (!manager) return [];
-        const itemsList = manager.shadowRoot.querySelector('extensions-item-list');
-        if (!itemsList) return [];
-        const items = itemsList.shadowRoot.querySelectorAll('extensions-item');
-        return Array.from(items).map(item => ({
-            id: item.id,
-            name: item.shadowRoot.querySelector('#name')?.textContent || 'unknown'
-        }));
-    """)
+    # Check what extensions are available by looking at chrome.management API
+    # Try opening Automa popup instead of newtab
+    print("Trying Automa popup...")
     
-    print(f"Found extensions: {ext_ids}")
+    # Get all window handles
+    original_window = driver.current_window_handle
     
-    # Find Automa extension ID
-    automa_id = None
-    for ext in ext_ids:
-        if 'automa' in ext.get('name', '').lower():
-            automa_id = ext['id']
-            print(f"Found Automa with ID: {automa_id}")
-            break
+    # Try to find extension by checking chrome://extensions page content
+    driver.get("chrome://extensions")
+    time.sleep(2)
     
-    if not automa_id:
-        # Try reading from manifest
-        print("Trying to read Automa ID from manifest...")
-        # Check the extension folder for manifest
-        import hashlib
-        manifest_path = "/tmp/extensions/automa/manifest.json"
-        if os.path.exists(manifest_path):
-            with open(manifest_path) as f:
-                manifest = json.load(f)
-                print(f"Automa manifest name: {manifest.get('name')}")
+    # Take screenshot of extensions
+    driver.save_screenshot("/tmp/screenshot_2_ext_check.png")
     
-    # If we found Automa ID, open its dashboard
-    if automa_id:
-        automa_url = f"chrome-extension://{automa_id}/newtab.html"
-        print(f"Opening Automa at: {automa_url}")
-        driver.get(automa_url)
-        time.sleep(5)
-    else:
-        print("Could not find Automa ID, trying default URLs...")
-        # Try different possible pages
-        for url in [
-            "chrome://newtab",
-            "chrome-extension://infppggnoaenmfagbfknfkancpbljcca/newtab.html"
-        ]:
+    # Get page HTML to see what extensions are loaded
+    page_source = driver.page_source
+    print(f"Page source length: {len(page_source)}")
+    
+    # Now try different extension URLs
+    # The extension ID for unpacked extensions is generated from the path
+    # Let's try to find it
+    
+    print("Listing chrome-extension:// URLs that might work...")
+    
+    # Try the popup
+    test_urls = [
+        "chrome://newtab",
+    ]
+    
+    for url in test_urls:
+        print(f"Trying: {url}")
+        try:
             driver.get(url)
             time.sleep(2)
+            title = driver.title
+            print(f"  Title: {title}")
+            if "automa" in title.lower() or "workflow" in title.lower():
+                print("  Found Automa!")
+                break
+        except Exception as e:
+            print(f"  Error: {e}")
     
-    driver.save_screenshot("/tmp/screenshot_3_automa.png")
-    print(f"Screenshot 3: Page title = {driver.title}")
-    print(f"Current URL: {driver.current_url}")
+    driver.save_screenshot("/tmp/screenshot_3_newtab.png")
+    print(f"Final page: {driver.title} - {driver.current_url}")
     
-    # Print page info
-    all_buttons = driver.find_elements(By.TAG_NAME, "button")
-    print(f"Found {len(all_buttons)} buttons")
-    for i, btn in enumerate(all_buttons[:15]):
-        try:
-            txt = btn.text[:30] if btn.text else btn.get_attribute('aria-label') or '(no text)'
-            print(f"  Button {i}: {txt}")
-        except:
-            pass
+    # List all buttons on page
+    buttons = driver.find_elements(By.TAG_NAME, "button")
+    print(f"Found {len(buttons)} buttons")
+    for i, b in enumerate(buttons[:10]):
+        print(f"  {i}: {b.text or b.get_attribute('aria-label') or '(no text)'}")
     
-    # Look for file input
-    file_inputs = driver.find_elements(By.CSS_SELECTOR, "input[type='file']")
-    print(f"Found {len(file_inputs)} file inputs")
-    
-    # Final screenshot
     driver.save_screenshot("/tmp/screenshot.png")
-    print("Final screenshot saved")
     
 except Exception as e:
     print(f"Error: {e}")
     import traceback
     traceback.print_exc()
-    driver.save_screenshot("/tmp/screenshot.png")
+    try:
+        driver.save_screenshot("/tmp/screenshot.png")
+    except:
+        pass
     
 finally:
     print("Closing browser...")
@@ -314,7 +295,10 @@ REMOTE_SCRIPT
 
 # Download screenshots to see what happened
 echo -e "${YELLOW}Downloading screenshots...${NC}"
-scp -o StrictHostKeyChecking=no -i "$KEY_FILE" ubuntu@$PUBLIC_IP:/tmp/screenshot*.png ./ 2>/dev/null && echo -e "${GREEN}✓ Screenshots saved${NC}" || echo "No screenshots available"
+scp -o StrictHostKeyChecking=no -i "$KEY_FILE" ubuntu@$PUBLIC_IP:/tmp/screenshot.png ./screenshot.png 2>/dev/null && echo "✓ screenshot.png"
+scp -o StrictHostKeyChecking=no -i "$KEY_FILE" ubuntu@$PUBLIC_IP:/tmp/screenshot_1_extensions.png ./screenshot_1.png 2>/dev/null && echo "✓ screenshot_1.png"
+scp -o StrictHostKeyChecking=no -i "$KEY_FILE" ubuntu@$PUBLIC_IP:/tmp/screenshot_2_ext_check.png ./screenshot_2.png 2>/dev/null && echo "✓ screenshot_2.png"
+scp -o StrictHostKeyChecking=no -i "$KEY_FILE" ubuntu@$PUBLIC_IP:/tmp/screenshot_3_newtab.png ./screenshot_3.png 2>/dev/null && echo "✓ screenshot_3.png"
 
 echo ""
 echo -e "${GREEN}========================================${NC}"
