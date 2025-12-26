@@ -171,8 +171,9 @@ os.environ["DISPLAY"] = ":99"
 
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
+from selenium.webdriver.common.keys import Keys
+from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 
@@ -192,97 +193,68 @@ driver = webdriver.Chrome(options=options)
 driver.implicitly_wait(10)
 
 try:
-    # Load workflow JSON
-    with open("/tmp/workflow.json", "r") as f:
-        workflow = json.load(f)
-    
     print("Opening Automa dashboard...")
-    # Automa extension ID (standard)
     driver.get("chrome-extension://infppggnoaenmfagbfknfkancpbljcca/newtab.html")
-    time.sleep(3)
+    time.sleep(5)
     
-    print("Importing workflow via JavaScript...")
-    # Import workflow directly into Automa's storage
-    import_script = """
-    return new Promise((resolve, reject) => {
-        const workflow = arguments[0];
-        
-        // Access Automa's background page to import
-        chrome.runtime.sendMessage(
-            'infppggnoaenmfagbfknfkancpbljcca',
-            { 
-                type: 'workflow:import', 
-                data: workflow 
-            },
-            response => {
-                if (chrome.runtime.lastError) {
-                    reject(chrome.runtime.lastError);
-                } else {
-                    resolve(response);
-                }
-            }
-        );
-    });
-    """
+    # Take screenshot to see initial state
+    driver.save_screenshot("/tmp/screenshot_1_initial.png")
+    print("Screenshot 1: Initial Automa page")
     
-    # Alternative: Use localStorage/IndexedDB approach
-    # First try to execute workflow directly
-    execute_script = """
-    const workflow = arguments[0];
+    # Print page source for debugging
+    print(f"Page title: {driver.title}")
+    print(f"Current URL: {driver.current_url}")
     
-    // Store in localStorage for Automa to pick up
-    localStorage.setItem('automa-workflow-import', JSON.stringify(workflow));
+    # Try to find the import/menu button
+    print("Looking for menu or import options...")
     
-    // Trigger import event
-    window.dispatchEvent(new CustomEvent('automa:import-workflow', { detail: workflow }));
+    # Look for common UI elements
+    all_buttons = driver.find_elements(By.TAG_NAME, "button")
+    print(f"Found {len(all_buttons)} buttons")
+    for i, btn in enumerate(all_buttons[:10]):
+        try:
+            print(f"  Button {i}: {btn.text[:50] if btn.text else '(no text)'} - {btn.get_attribute('class')[:50] if btn.get_attribute('class') else ''}")
+        except:
+            pass
     
-    return 'stored';
-    """
+    # Look for import-related elements
+    import_elements = driver.find_elements(By.XPATH, "//*[contains(text(), 'Import') or contains(text(), 'import')]")
+    print(f"Found {len(import_elements)} import-related elements")
     
-    result = driver.execute_script(execute_script, workflow)
-    print(f"Import result: {result}")
+    # Look for dropdown/menu triggers
+    menu_elements = driver.find_elements(By.CSS_SELECTOR, "[class*='menu'], [class*='dropdown'], [aria-haspopup='true']")
+    print(f"Found {len(menu_elements)} menu elements")
+    
+    # Try clicking on settings/menu icon (usually three dots or hamburger)
+    icon_buttons = driver.find_elements(By.CSS_SELECTOR, "button svg, button i, [class*='icon']")
+    print(f"Found {len(icon_buttons)} icon buttons")
     
     time.sleep(2)
+    driver.save_screenshot("/tmp/screenshot_2_exploring.png")
+    print("Screenshot 2: After exploring UI")
     
-    # Refresh to see imported workflow
-    driver.refresh()
-    time.sleep(3)
+    # Look for any workflow cards that might already exist
+    cards = driver.find_elements(By.CSS_SELECTOR, "[class*='card'], [class*='workflow'], [class*='item']")
+    print(f"Found {len(cards)} card/item elements")
     
-    print("Looking for workflow to execute...")
+    # Try to find "New workflow" or similar
+    new_workflow = driver.find_elements(By.XPATH, "//*[contains(text(), 'New') or contains(text(), 'Create') or contains(text(), '+')]")
+    print(f"Found {len(new_workflow)} 'New/Create' elements")
     
-    # Try to find and click the workflow
-    try:
-        # Look for workflow card or run button
-        workflow_elements = driver.find_elements(By.CSS_SELECTOR, "[class*='workflow'], [class*='card']")
-        print(f"Found {len(workflow_elements)} potential workflow elements")
-        
-        # Try clicking first workflow
-        if workflow_elements:
-            workflow_elements[0].click()
-            time.sleep(2)
-    except Exception as e:
-        print(f"Could not click workflow: {e}")
+    # Check if there's a file input for import
+    file_inputs = driver.find_elements(By.CSS_SELECTOR, "input[type='file']")
+    print(f"Found {len(file_inputs)} file inputs")
     
-    # Try to find and click play/run button
-    try:
-        run_buttons = driver.find_elements(By.CSS_SELECTOR, "button[title*='run'], button[title*='Run'], button[title*='play'], [class*='play'], [class*='run']")
-        print(f"Found {len(run_buttons)} run buttons")
-        for btn in run_buttons:
-            try:
-                btn.click()
-                print("Clicked run button")
-                break
-            except:
-                pass
-    except Exception as e:
-        print(f"Could not find run button: {e}")
+    if file_inputs:
+        print("Found file input! Attempting to upload workflow...")
+        file_inputs[0].send_keys("/tmp/workflow.json")
+        time.sleep(3)
+        driver.save_screenshot("/tmp/screenshot_3_after_upload.png")
     
-    print("Waiting for workflow to complete...")
-    time.sleep(60)
-    
-    # Take screenshot
+    # Final screenshot
+    time.sleep(2)
     driver.save_screenshot("/tmp/screenshot.png")
-    print("Screenshot saved to /tmp/screenshot.png")
+    print("Final screenshot saved")
     
 except Exception as e:
     print(f"Error: {e}")
@@ -303,9 +275,9 @@ PYTHON_SCRIPT
     
 REMOTE_SCRIPT
 
-# Download screenshot to see what happened
-echo -e "${YELLOW}Downloading screenshot...${NC}"
-scp -o StrictHostKeyChecking=no -i "$KEY_FILE" ubuntu@$PUBLIC_IP:/tmp/screenshot.png ./screenshot-$(date +%Y%m%d-%H%M%S).png 2>/dev/null && echo -e "${GREEN}✓ Screenshot saved${NC}" || echo "No screenshot available"
+# Download screenshots to see what happened
+echo -e "${YELLOW}Downloading screenshots...${NC}"
+scp -o StrictHostKeyChecking=no -i "$KEY_FILE" ubuntu@$PUBLIC_IP:/tmp/screenshot*.png ./ 2>/dev/null && echo -e "${GREEN}✓ Screenshots saved${NC}" || echo "No screenshots available"
 
 echo ""
 echo -e "${GREEN}========================================${NC}"
