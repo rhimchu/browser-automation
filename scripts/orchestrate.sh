@@ -13,10 +13,10 @@ INSTANCE_TYPE="t2.micro"                    # Free tier eligible
 AMI_ID="ami-01811d4912b4ccb26"              # Ubuntu 22.04 in Singapore
 KEY_NAME="browser-automation-key"            # From aws-initial-setup.sh
 KEY_FILE="$HOME/.ssh/browser-automation-key.pem"
-SECURITY_GROUP="sg-009d7b361acc0059f"                            # Fill this after running aws-initial-setup.sh
+SECURITY_GROUP=""                            # Fill this after running aws-initial-setup.sh
 
 # Your GitHub repo URL (raw content URL)
-GITHUB_USER="rhimchu"                  # Change to your GitHub username
+GITHUB_USER="YOUR_USERNAME"                  # Change to your GitHub username
 GITHUB_REPO="browser-automation"
 GITHUB_RAW="https://raw.githubusercontent.com/${GITHUB_USER}/${GITHUB_REPO}/main"
 # ============================================
@@ -111,35 +111,69 @@ echo ""
 ssh -o StrictHostKeyChecking=no -i "$KEY_FILE" ubuntu@$PUBLIC_IP << REMOTE_SCRIPT
     set -e
     
+    echo "=== Creating swap file (prevents memory issues) ==="
+    sudo fallocate -l 1G /swapfile
+    sudo chmod 600 /swapfile
+    sudo mkswap /swapfile
+    sudo swapon /swapfile
+    
     echo "=== Installing dependencies ==="
     sudo apt-get update -qq
-    sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
+    sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
         chromium-browser \
-        chromium-chromedriver \
         xvfb \
-        python3-pip \
         unzip \
-        curl > /dev/null
+        curl \
+        imagemagick
     
-    pip3 install -q selenium webdriver-manager
+    echo "=== Downloading extensions from GitHub ==="
+    mkdir -p /tmp/extensions
+    cd /tmp/extensions
     
-    echo "=== Downloading files from GitHub ==="
-    sudo mkdir -p /opt/automation/extensions /opt/automation/workflows
-    sudo chown -R ubuntu:ubuntu /opt/automation
-    cd /opt/automation
+    # Download and extract extensions
+    curl -sL "${GITHUB_RAW}/extensions/automa.crx" -o automa.crx
+    curl -sL "${GITHUB_RAW}/extensions/captcha-solver.crx" -o captcha-solver.crx
     
-    # Download extensions
-    curl -sL "${GITHUB_RAW}/extensions/automa.crx" -o extensions/automa.crx
-    curl -sL "${GITHUB_RAW}/extensions/captcha-solver.crx" -o extensions/captcha-solver.crx
+    # Extract CRX files (they're just ZIP files with a header)
+    mkdir -p automa captcha-solver
+    unzip -o -q automa.crx -d automa 2>/dev/null || python3 -c "
+import zipfile, io
+data = open('automa.crx', 'rb').read()
+start = data.find(b'PK\x03\x04')
+zipfile.ZipFile(io.BytesIO(data[start:])).extractall('automa')
+"
+    unzip -o -q captcha-solver.crx -d captcha-solver 2>/dev/null || python3 -c "
+import zipfile, io
+data = open('captcha-solver.crx', 'rb').read()
+start = data.find(b'PK\x03\x04')
+zipfile.ZipFile(io.BytesIO(data[start:])).extractall('captcha-solver')
+"
     
-    # Download workflow
-    curl -sL "${GITHUB_RAW}/workflows/form-fill.automa.json" -o workflows/form-fill.automa.json
+    echo "=== Starting browser with Automa ==="
+    export DISPLAY=:99
+    Xvfb :99 -screen 0 1920x1080x24 &
+    sleep 2
     
-    # Download and run automation script
-    curl -sL "${GITHUB_RAW}/scripts/run_automation.py" -o run_automation.py
+    # Launch Chromium with extensions - Automa handles everything including URL
+    timeout 120 chromium-browser \
+        --no-sandbox \
+        --disable-gpu \
+        --disable-dev-shm-usage \
+        --window-size=1920,1080 \
+        --load-extension=/tmp/extensions/automa,/tmp/extensions/captcha-solver \
+        --disable-blink-features=AutomationControlled &
     
-    echo "=== Starting automation ==="
-    python3 run_automation.py
+    BROWSER_PID=\$!
+    echo "Browser started (PID: \$BROWSER_PID)"
+    echo "Automa workflow running..."
+    
+    # Wait for workflow (adjust time as needed)
+    sleep 90
+    
+    echo "=== Taking screenshot ==="
+    DISPLAY=:99 import -window root /tmp/screenshot.png 2>/dev/null || echo "Screenshot skipped"
+    
+    echo "=== Done ==="
     
 REMOTE_SCRIPT
 
