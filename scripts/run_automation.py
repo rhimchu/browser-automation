@@ -32,7 +32,7 @@ from selenium.webdriver.support import expected_conditions as EC
 # ============================================
 # CONFIGURATION
 # ============================================
-TARGET_URL = "https://example.com/your-form-page"  # Your target website
+TARGET_URL = "https://booking.peninsulatailors.com/?utm_source=google_storevisit_sukhumvit&utm_campaign=2025&gad_source=1&gad_campaignid=23348435899&gbraid=0AAAABA-q8ARReHT-lrH5FH7Pg6K_cQA8_"  # Your target website
 WORKFLOW_TIMEOUT = 180  # Max seconds to wait for Automa workflow to complete
 # ============================================
 
