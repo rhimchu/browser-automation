@@ -16,7 +16,7 @@ KEY_FILE="$HOME/.ssh/browser-automation-key.pem"
 SECURITY_GROUP=""                            # Fill this after running aws-initial-setup.sh
 
 # Your GitHub repo URL (raw content URL)
-GITHUB_USER="YOUR_USERNAME"                  # Change to your GitHub username
+GITHUB_USER="rhimchu"                        # Your GitHub username
 GITHUB_REPO="browser-automation"
 GITHUB_RAW="https://raw.githubusercontent.com/${GITHUB_USER}/${GITHUB_REPO}/main"
 # ============================================
@@ -130,18 +130,14 @@ ssh -o StrictHostKeyChecking=no -i "$KEY_FILE" ubuntu@$PUBLIC_IP << REMOTE_SCRIP
     mkdir -p /tmp/extensions
     cd /tmp/extensions
     
-    # Download and extract extensions
-    curl -sL "${GITHUB_RAW}/extensions/automa.crx" -o automa.crx
-    curl -sL "${GITHUB_RAW}/extensions/captcha-solver.crx" -o captcha-solver.crx
+    # Download Automa (zipped folder with your workflows)
+    curl -sL "${GITHUB_RAW}/extensions/1.29.12_0.zip" -o automa.zip
+    unzip -o -q automa.zip -d .
+    mv 1.29.12_0 automa
     
-    # Extract CRX files (they're just ZIP files with a header)
-    mkdir -p automa captcha-solver
-    unzip -o -q automa.crx -d automa 2>/dev/null || python3 -c "
-import zipfile, io
-data = open('automa.crx', 'rb').read()
-start = data.find(b'PK\x03\x04')
-zipfile.ZipFile(io.BytesIO(data[start:])).extractall('automa')
-"
+    # Download and extract captcha solver
+    curl -sL "${GITHUB_RAW}/extensions/captcha-solver.crx" -o captcha-solver.crx
+    mkdir -p captcha-solver
     unzip -o -q captcha-solver.crx -d captcha-solver 2>/dev/null || python3 -c "
 import zipfile, io
 data = open('captcha-solver.crx', 'rb').read()
@@ -154,14 +150,18 @@ zipfile.ZipFile(io.BytesIO(data[start:])).extractall('captcha-solver')
     Xvfb :99 -screen 0 1920x1080x24 &
     sleep 2
     
-    # Launch Chromium with extensions - Automa handles everything including URL
-    timeout 120 chromium-browser \
+    # Launch Chromium with extensions
+    # Automa will auto-run on startup since workflow is set to "On Browser Startup"
+    chromium-browser \
         --no-sandbox \
         --disable-gpu \
         --disable-dev-shm-usage \
         --window-size=1920,1080 \
         --load-extension=/tmp/extensions/automa,/tmp/extensions/captcha-solver \
-        --disable-blink-features=AutomationControlled &
+        --disable-blink-features=AutomationControlled \
+        --no-first-run \
+        --no-default-browser-check \
+        --user-data-dir=/tmp/chrome-profile &
     
     BROWSER_PID=\$!
     echo "Browser started (PID: \$BROWSER_PID)"
@@ -172,6 +172,9 @@ zipfile.ZipFile(io.BytesIO(data[start:])).extractall('captcha-solver')
     
     echo "=== Taking screenshot ==="
     DISPLAY=:99 import -window root /tmp/screenshot.png 2>/dev/null || echo "Screenshot skipped"
+    
+    # Kill browser
+    kill \$BROWSER_PID 2>/dev/null || true
     
     echo "=== Done ==="
     
