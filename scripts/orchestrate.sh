@@ -9,7 +9,7 @@ set -e
 # CONFIGURATION - CHANGE THESE VALUES
 # ============================================
 REGION="ap-southeast-1"
-INSTANCE_TYPE="t2.micro"                    # Free tier eligible
+INSTANCE_TYPE="t3.micro"                    # Free tier eligible
 AMI_ID="ami-01811d4912b4ccb26"              # Ubuntu 22.04 in Singapore
 KEY_NAME="browser-automation-key"            # From aws-initial-setup.sh
 KEY_FILE="$HOME/.ssh/browser-automation-key.pem"
@@ -119,8 +119,12 @@ ssh -o StrictHostKeyChecking=no -i "$KEY_FILE" ubuntu@$PUBLIC_IP << REMOTE_SCRIP
     
     echo "=== Installing dependencies ==="
     sudo apt-get update -qq
+    
+    # Install Google Chrome (avoids Ubuntu snap issues)
+    wget -q -O /tmp/chrome.deb https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
+    sudo apt-get install -y /tmp/chrome.deb
+    
     sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
-        chromium-browser \
         xvfb \
         unzip \
         curl \
@@ -150,9 +154,9 @@ zipfile.ZipFile(io.BytesIO(data[start:])).extractall('captcha-solver')
     Xvfb :99 -screen 0 1920x1080x24 &
     sleep 2
     
-    # Launch Chromium with extensions
+    # Launch Chrome with extensions
     # Automa will auto-run on startup since workflow is set to "On Browser Startup"
-    chromium-browser \
+    google-chrome \
         --no-sandbox \
         --disable-gpu \
         --disable-dev-shm-usage \
