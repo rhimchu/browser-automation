@@ -6,7 +6,7 @@
 set -e
 
 # CHANGE THIS to your GitHub username and repo
-GITHUB_RAW="https://raw.githubusercontent.com/YOUR_USERNAME/browser-automation/main"
+GITHUB_RAW="https://raw.githubusercontent.com/rhimchu/browser-automation/main"
 
 echo "=== Setting up Browser Automation Environment ==="
 

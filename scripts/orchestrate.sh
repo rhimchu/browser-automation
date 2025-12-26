@@ -16,7 +16,7 @@ KEY_FILE="$HOME/.ssh/browser-automation-key.pem"
 SECURITY_GROUP=""                            # Fill this after running aws-initial-setup.sh
 
 # Your GitHub repo URL (raw content URL)
-GITHUB_USER="YOUR_USERNAME"                  # Change to your GitHub username
+GITHUB_USER="rhimchu"                  # Change to your GitHub username
 GITHUB_REPO="browser-automation"
 GITHUB_RAW="https://raw.githubusercontent.com/${GITHUB_USER}/${GITHUB_REPO}/main"
 # ============================================

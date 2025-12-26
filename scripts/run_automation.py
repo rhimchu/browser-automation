@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
 run_automation.py
-Main browser automation script with Automa and captcha solver
-Save to: scripts/run_automation.py
+Launches browser with Automa and captcha solver extensions.
+Automa handles the entire workflow including captcha waiting.
 """
 
 import os
@@ -30,11 +30,10 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 
 # ============================================
-# CONFIGURATION - CHANGE THESE VALUES
+# CONFIGURATION
 # ============================================
 TARGET_URL = "https://example.com/your-form-page"  # Your target website
-WAIT_FOR_CAPTCHA = 15  # Seconds to wait for captcha solver
-WAIT_AFTER_SUBMIT = 10  # Seconds to wait after form submission
+WORKFLOW_TIMEOUT = 180  # Max seconds to wait for Automa workflow to complete
 # ============================================
 
 # Paths
@@ -45,10 +44,7 @@ TEMP_EXT_DIR = Path("/tmp/extensions")
 
 
 def extract_crx(crx_path, extract_dir):
-    """
-    Extract CRX extension to a folder.
-    CRX files are ZIP files with a special header.
-    """
+    """Extract CRX extension to a folder."""
     extract_path = extract_dir / crx_path.stem
     extract_path.mkdir(parents=True, exist_ok=True)
     
@@ -63,7 +59,6 @@ def extract_crx(crx_path, extract_dir):
     if zip_start == -1:
         raise ValueError(f"Could not find ZIP data in {crx_path}")
     
-    # Extract from ZIP data
     zip_data = io.BytesIO(data[zip_start:])
     with zipfile.ZipFile(zip_data, 'r') as zip_ref:
         zip_ref.extractall(extract_path)
@@ -76,8 +71,6 @@ def setup_browser():
     """Set up Chromium browser with extensions loaded."""
     
     print("Setting up browser...")
-    
-    # Create temp directory for extracted extensions
     TEMP_EXT_DIR.mkdir(exist_ok=True)
     
     # Extract extensions
@@ -92,133 +85,70 @@ def setup_browser():
     # Load extensions
     options.add_argument(f"--load-extension={automa_path},{captcha_path}")
     
-    # Required for running in container/server
+    # Required for running headless on server
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
     options.add_argument("--disable-gpu")
     options.add_argument("--window-size=1920,1080")
     
-    # Make automation less detectable
+    # Anti-detection
     options.add_argument("--disable-blink-features=AutomationControlled")
     options.add_experimental_option("excludeSwitches", ["enable-automation"])
     options.add_experimental_option("useAutomationExtension", False)
     
-    # Use system chromedriver
     service = Service("/usr/bin/chromedriver")
-    
     driver = webdriver.Chrome(service=service, options=options)
     driver.implicitly_wait(10)
-    
-    # Additional anti-detection
     driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
     
     print("✓ Browser ready with extensions loaded")
     return driver
 
 
-def load_workflow():
-    """Load the Automa workflow JSON file."""
-    workflow_file = WORKFLOWS_DIR / "form-fill.automa.json"
-    
-    if not workflow_file.exists():
-        print(f"Warning: Workflow file not found at {workflow_file}")
-        return None
-    
-    with open(workflow_file, 'r') as f:
-        return json.load(f)
-
-
-def run_automation(driver):
+def wait_for_automa_completion(driver, timeout):
     """
-    Main automation logic.
-    Customize this function for your specific form!
+    Wait for Automa workflow to complete.
+    Checks for success indicators on the page.
     """
+    print(f"Waiting for Automa workflow (max {timeout}s)...")
     
-    print(f"Navigating to: {TARGET_URL}")
-    driver.get(TARGET_URL)
-    
-    # Wait for page to fully load
-    WebDriverWait(driver, 30).until(
-        EC.presence_of_element_located((By.TAG_NAME, "body"))
-    )
-    print("✓ Page loaded")
-    
-    time.sleep(3)  # Extra wait for JavaScript to initialize
-    
-    # ============================================
-    # OPTION 1: Let Automa handle everything
-    # If you've configured Automa with a trigger (e.g., keyboard shortcut),
-    # you can trigger it here. Otherwise, Automa may auto-run on page load.
-    # ============================================
-    
-    # ============================================
-    # OPTION 2: Manual form filling with Selenium
-    # Uncomment and customize the code below for your form
-    # ============================================
-    
-    """
-    # Example: Fill out a contact form
-    try:
-        # Fill name field
-        name_field = WebDriverWait(driver, 10).until(
-            EC.presence_of_element_located((By.NAME, "name"))
-        )
-        name_field.clear()
-        name_field.send_keys("John Doe")
-        print("✓ Filled name field")
+    start_time = time.time()
+    while time.time() - start_time < timeout:
+        try:
+            # Check for common success indicators
+            # Customize these selectors based on your form's success message
+            success_selectors = [
+                ".success-message",
+                ".thank-you", 
+                "[data-success]",
+                ".form-success",
+                "#success"
+            ]
+            
+            for selector in success_selectors:
+                try:
+                    element = driver.find_element(By.CSS_SELECTOR, selector)
+                    if element.is_displayed():
+                        print(f"✓ Success element detected: {selector}")
+                        return True
+                except:
+                    pass
+                
+        except Exception:
+            pass
         
-        # Fill email field
-        email_field = driver.find_element(By.NAME, "email")
-        email_field.clear()
-        email_field.send_keys("john.doe@example.com")
-        print("✓ Filled email field")
-        
-        # Fill message field
-        message_field = driver.find_element(By.NAME, "message")
-        message_field.clear()
-        message_field.send_keys("This is an automated message.")
-        print("✓ Filled message field")
-        
-    except Exception as e:
-        print(f"Error filling form: {e}")
-        raise
-    """
+        time.sleep(2)
     
-    # Wait for captcha solver to work
-    print(f"Waiting {WAIT_FOR_CAPTCHA}s for captcha solver...")
-    time.sleep(WAIT_FOR_CAPTCHA)
-    
-    # ============================================
-    # Submit the form (uncomment when ready)
-    # ============================================
-    
-    """
-    try:
-        submit_button = driver.find_element(By.CSS_SELECTOR, "button[type='submit']")
-        submit_button.click()
-        print("✓ Form submitted")
-    except Exception as e:
-        print(f"Error submitting form: {e}")
-        raise
-    """
-    
-    # Wait for submission to complete
-    print(f"Waiting {WAIT_AFTER_SUBMIT}s for completion...")
-    time.sleep(WAIT_AFTER_SUBMIT)
-    
-    # Take screenshot for verification
-    screenshot_path = "/tmp/result.png"
-    driver.save_screenshot(screenshot_path)
-    print(f"✓ Screenshot saved to {screenshot_path}")
-    
-    print("✓ Automation completed successfully!")
+    print(f"⚠ Timeout after {timeout}s")
+    return False
 
 
 def main():
     print("=" * 50)
-    print("  Browser Automation Starting")
+    print("  Browser Automation - Automa Controlled")
     print("=" * 50)
     print(f"Target URL: {TARGET_URL}")
+    print(f"Timeout: {WORKFLOW_TIMEOUT}s")
     print("")
     
     driver = None
@@ -227,11 +157,22 @@ def main():
     try:
         driver = setup_browser()
         
-        workflow = load_workflow()
-        if workflow:
-            print(f"✓ Workflow loaded: {len(workflow)} items")
+        # Navigate to target - Automa will take over from here
+        print(f"Navigating to: {TARGET_URL}")
+        driver.get(TARGET_URL)
         
-        run_automation(driver)
+        WebDriverWait(driver, 30).until(
+            EC.presence_of_element_located((By.TAG_NAME, "body"))
+        )
+        print("✓ Page loaded - Automa workflow running...")
+        
+        # Let Automa handle everything (form filling, captcha, submit)
+        wait_for_automa_completion(driver, WORKFLOW_TIMEOUT)
+        
+        # Take screenshot for verification
+        screenshot_path = "/tmp/result.png"
+        driver.save_screenshot(screenshot_path)
+        print(f"✓ Screenshot saved to {screenshot_path}")
         
     except Exception as e:
         print(f"\n✗ ERROR: {e}")
@@ -248,7 +189,7 @@ def main():
     print("")
     print("=" * 50)
     if exit_code == 0:
-        print("  SUCCESS - Automation completed")
+        print("  SUCCESS")
     else:
         print("  FAILED - Check errors above")
     print("=" * 50)
